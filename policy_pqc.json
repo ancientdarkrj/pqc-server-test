@@ -1,0 +1,6 @@
+{
+  kem kyber768,
+  dh x25519,
+  symmetric aes-256-gcm,
+  provider oqsprovider
+}
