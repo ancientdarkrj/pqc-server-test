@@ -11,7 +11,8 @@ RUN apk update && \
 # 2. CRUCIAL: Definir as variáveis de ambiente GLOBALMENTE
 # O Python subprocess precisa disso para achar os .so (bibliotecas)
 # Adicionamos caminhos comuns do OQS para garantir (lib e lib64)
-ENV LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib64:/usr/local/ssl/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib64:/usr/local/ssl/lib:${LD_LIBRARY_PATH}"ENV LD_LIBRARY_PATH="/usr/local/lib:/usr/local/lib64:/usr/local/ssl/lib:${LD_LIBRARY_PATH}"
+ENV OPENSSL_MODULES="/usr/local/lib/ossl-modules:/usr/local/lib64/ossl-modules:/usr/local/ssl/lib/ossl-modules"
 ENV OPENSSL_MODULES="/usr/local/lib/ossl-modules:/usr/local/lib64/ossl-modules:/usr/local/ssl/lib/ossl-modules"
 ENV PATH="/usr/local/bin:/usr/local/ssl/bin:${PATH}"
 
