@@ -6,158 +6,138 @@ import hashlib
 import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-# Configurações da Persona Kortana: Organização e Constantes
+# --- Configurações Globais ---
 POLICY_FILE = 'policy_pqc.json'
 HOST_NAME = '0.0.0.0'
 SERVER_PORT = 8080
 
 class PQCRequestHandler(BaseHTTPRequestHandler):
     def _set_headers(self, status=200):
+        """Define os cabeçalhos de resposta padrão (JSON)."""
         self.send_response(status)
         self.send_header('Content-type', 'application/json')
         self.end_headers()
 
     def do_POST(self):
         """
-        Recebe texto plano, executa cifragem híbrida (PQC + Clássica) via OpenSSL CLI
-        e retorna o JSON estruturado.
+        Processa a requisição POST.
+        Validamos headers e corpo antes de tentar qualquer criptografia.
         """
         try:
-            # 1. Ler o corpo da requisição (Texto Plano)
-            content_length = int(self.headers['Content-Length'])
+            print(f"\n[Kortana Log] Nova requisição recebida de {self.client_address}")
+
+            # 1. Validação Defensiva: O cabeçalho Content-Length existe?
+            # Se o cliente (curl) não mandar o tamanho, não podemos ler.
+            if 'Content-Length' not in self.headers:
+                raise ValueError("Cabeçalho 'Content-Length' ausente. Você enviou dados com -d?")
+            
+            # 2. Validação de Tamanho
+            try:
+                content_length = int(self.headers['Content-Length'])
+            except (ValueError, TypeError):
+                raise ValueError("Content-Length inválido.")
+
+            if content_length <= 0:
+                raise ValueError("O corpo da mensagem está vazio. Nada para cifrar!")
+
+            # 3. Leitura do Payload
             plaintext = self.rfile.read(content_length).decode('utf-8')
-            
-            print(f"[Kortana Log] Recebido payload de {len(plaintext)} bytes. Iniciando protocolo híbrido...")
+            print(f"[Kortana Log] Payload recebido ({content_length} bytes). Iniciando criptografia...")
 
-            # 2. Carregar Política
+            # 4. Carregamento da Política (com tratamento de erro JSON)
             if not os.path.exists(POLICY_FILE):
-                raise FileNotFoundError("Arquivo de política não encontrado. Organização é tudo!")
+                raise FileNotFoundError(f"Arquivo de política '{POLICY_FILE}' não encontrado no servidor.")
             
-            with open(POLICY_FILE, 'r') as f:
-                policy = json.load(f)
+            try:
+                with open(POLICY_FILE, 'r') as f:
+                    policy = json.load(f)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Erro de sintaxe no '{POLICY_FILE}'. Verifique as aspas duplas! Detalhe: {str(e)}")
 
-            # 3. Executar o Fluxo Criptográfico Híbrido
+            # 5. Execução do Core Criptográfico
             result_data = self.run_hybrid_encryption(plaintext, policy)
 
-            # 4. Responder
+            # 6. Sucesso!
             self._set_headers(200)
             self.wfile.write(json.dumps(result_data).encode('utf-8'))
-            print("[Kortana Log] Resposta enviada com sucesso. :)")
+            print("[Kortana Log] Resposta cifrada enviada com sucesso. ✨")
 
         except Exception as e:
-            self._set_headers(500)
-            error_msg = {"error": str(e), "message": "Ops! Algo deu errado no processamento."}
-            self.wfile.write(json.dumps(error_msg).encode('utf-8'))
-            print(f"[Kortana Error] {e}")
+            # Tratamento global de erros: Devolve JSON mesmo se quebrar
+            print(f"[Kortana Error] {str(e)}")
+            self._set_headers(400) # Bad Request ou Internal Error
+            error_response = {
+                "error": str(e),
+                "hint": "Verifique se usou -d 'sua mensagem' no curl e se o policy_pqc.json está válido."
+            }
+            self.wfile.write(json.dumps(error_response).encode('utf-8'))
 
     def run_hybrid_encryption(self, plaintext, policy):
         """
-        Orquestra o OpenSSL via subprocess para gerar chaves, encapsular e cifrar.
-        Usa arquivos temporários para garantir isolamento do processo.
+        Orquestra o OpenSSL para o fluxo híbrido (Kyber + X25519 + AES-GCM).
         """
-        # Cria um diretório temporário para manter a higiene do sistema de arquivos
         with tempfile.TemporaryDirectory() as tmp_dir:
             provider_flag = ["-provider", policy['provider'], "-provider", "default"]
             
-            # --- PASSO A: Algoritmo PQC (KEM) ---
-            # Como é uma simulação "Server-Side", vamos gerar um par de chaves efêmero
-            # e encapsular um segredo contra ele mesmo para obter o segredo compartilhado (SS).
-            # Na vida real, o cliente enviaria a chave pública, mas aqui simulamos o processo completo.
-            
+            # --- PASSO A: KEM Pós-Quântico ---
             kem_alg = policy['kem']
             kem_priv = os.path.join(tmp_dir, "kem_priv.pem")
             kem_pub = os.path.join(tmp_dir, "kem_pub.pem")
             kem_ct = os.path.join(tmp_dir, "kem_ct.bin")
             kem_ss = os.path.join(tmp_dir, "kem_ss.bin")
 
-            # Gerar chaves PQC
-            subprocess.run(
-                ["openssl", "genpkey", "-algorithm", kem_alg, "-out", kem_priv] + provider_flag,
-                check=True, capture_output=True
-            )
-            # Extrair PubKey
-            subprocess.run(
-                ["openssl", "pkey", "-in", kem_priv, "-pubout", "-out", kem_pub] + provider_flag,
-                check=True, capture_output=True
-            )
-            # Encapsular (Gera Ciphertext + Shared Secret)
-            subprocess.run(
-                ["openssl", "pkeyutl", "-encap", "-inkey", kem_priv, 
-                 "-peerform", "PEM", "-peerkey", kem_pub, 
-                 "-out", kem_ct, "-secret", kem_ss] + provider_flag,
-                check=True, capture_output=True
-            )
+            # Gerar chaves e encapsular
+            subprocess.run(["openssl", "genpkey", "-algorithm", kem_alg, "-out", kem_priv] + provider_flag, check=True, capture_output=True)
+            subprocess.run(["openssl", "pkey", "-in", kem_priv, "-pubout", "-out", kem_pub] + provider_flag, check=True, capture_output=True)
+            subprocess.run(["openssl", "pkeyutl", "-encap", "-inkey", kem_priv, "-peerform", "PEM", "-peerkey", kem_pub, "-out", kem_ct, "-secret", kem_ss] + provider_flag, check=True, capture_output=True)
 
-            # --- PASSO B: Algoritmo Clássico (DH / ECDH) ---
-            # Simulamos uma troca X25519 gerando dois pares para derivar um segredo comum.
+            # --- PASSO B: Clássico (X25519) ---
             dh_alg = policy['dh']
-            dh_priv_a = os.path.join(tmp_dir, "dh_priv_a.pem") # "Servidor"
-            dh_priv_b = os.path.join(tmp_dir, "dh_priv_b.pem") # "Cliente simulado"
+            dh_priv_a = os.path.join(tmp_dir, "dh_priv_a.pem")
+            dh_priv_b = os.path.join(tmp_dir, "dh_priv_b.pem")
             dh_pub_b = os.path.join(tmp_dir, "dh_pub_b.pem")
             dh_ss = os.path.join(tmp_dir, "dh_ss.bin")
 
-            # Gerar par A
-            subprocess.run(["openssl", "genpkey", "-algorithm", dh_alg, "-out", dh_priv_a], check=True)
-            # Gerar par B
-            subprocess.run(["openssl", "genpkey", "-algorithm", dh_alg, "-out", dh_priv_b], check=True)
-            subprocess.run(["openssl", "pkey", "-in", dh_priv_b, "-pubout", "-out", dh_pub_b], check=True)
-            
-            # Derivar Segredo Clássico (ECDH)
-            subprocess.run(
-                ["openssl", "pkeyutl", "-derive", "-inkey", dh_priv_a, 
-                 "-peerform", "PEM", "-peerkey", dh_pub_b, "-out", dh_ss],
-                check=True
-            )
+            subprocess.run(["openssl", "genpkey", "-algorithm", dh_alg, "-out", dh_priv_a], check=True, capture_output=True)
+            subprocess.run(["openssl", "genpkey", "-algorithm", dh_alg, "-out", dh_priv_b], check=True, capture_output=True)
+            subprocess.run(["openssl", "pkey", "-in", dh_priv_b, "-pubout", "-out", dh_pub_b], check=True, capture_output=True)
+            subprocess.run(["openssl", "pkeyutl", "-derive", "-inkey", dh_priv_a, "-peerform", "PEM", "-peerkey", dh_pub_b, "-out", dh_ss], check=True, capture_output=True)
 
-            # --- PASSO C: KDF (Combinação dos Segredos) ---
-            # Lemos os binários gerados
+            # --- PASSO C: KDF (Derivação Híbrida) ---
             with open(kem_ss, 'rb') as f: ss_pqc_bytes = f.read()
             with open(dh_ss, 'rb') as f: ss_classic_bytes = f.read()
 
-            # KDF Simples: SHA256( PQC_SS || Classic_SS )
-            # Isso garante que se um algoritmo quebrar, o outro ainda protege a chave (propriedade híbrida).
             kdf = hashlib.sha256()
             kdf.update(ss_pqc_bytes)
             kdf.update(ss_classic_bytes)
-            symmetric_key = kdf.digest() # 32 bytes (256 bits)
-            symmetric_key_hex = symmetric_key.hex()
+            symmetric_key_hex = kdf.digest().hex()
 
             # --- PASSO D: Cifragem Simétrica (AES-GCM) ---
-            # Gerar IV aleatório (12 bytes para GCM)
             iv = os.urandom(12)
-            iv_hex = iv.hex()
-            
             pt_file = os.path.join(tmp_dir, "plaintext.txt")
             ct_file = os.path.join(tmp_dir, "ciphertext.bin")
-            tag_file = os.path.join(tmp_dir, "tag.bin") # OpenSSL 3 suporta saída de tag separada
+            tag_file = os.path.join(tmp_dir, "tag.bin")
 
             with open(pt_file, 'w') as f: f.write(plaintext)
 
-            # Comando OpenSSL enc
-            # Nota: -K e -iv esperam hex strings
-            cmd_enc = [
+            subprocess.run([
                 "openssl", "enc", "-" + policy['symmetric'],
                 "-K", symmetric_key_hex,
-                "-iv", iv_hex,
+                "-iv", iv.hex(),
                 "-in", pt_file,
                 "-out", ct_file,
-                "-tag", tag_file # Flag crucial para GCM no OpenSSL moderno
-            ]
-            
-            subprocess.run(cmd_enc, check=True, capture_output=True)
+                "-tag", tag_file
+            ], check=True, capture_output=True)
 
-            # --- Preparar Resposta ---
+            # Leitura final
             with open(ct_file, 'rb') as f: ct_bytes = f.read()
             with open(tag_file, 'rb') as f: tag_bytes = f.read()
             with open(kem_ct, 'rb') as f: kem_ct_bytes = f.read()
             with open(kem_pub, 'rb') as f: kem_pub_bytes = f.read()
             with open(dh_pub_b, 'rb') as f: dh_pub_bytes = f.read()
 
-            # Concatenamos a Tag GCM ao final do Ciphertext (padrão comum)
-            final_ciphertext = ct_bytes + tag_bytes
-
             return {
-                "ciphertext": base64.b64encode(final_ciphertext).decode('utf-8'),
+                "ciphertext": base64.b64encode(ct_bytes + tag_bytes).decode('utf-8'),
                 "nonce": base64.b64encode(iv).decode('utf-8'),
                 "kem_ciphertext": base64.b64encode(kem_ct_bytes).decode('utf-8'),
                 "public_keys": {
@@ -167,11 +147,9 @@ class PQCRequestHandler(BaseHTTPRequestHandler):
             }
 
 if __name__ == "__main__":
-    print(f"🌟 Kortana Server v1.0 (Híbrido PQC) rodando em {HOST_NAME}:{SERVER_PORT}")
-    print(f"🔧 Carregando provedor OpenSSL: oqsprovider")
+    print(f"🌟 Kortana PQC Server 2.0 (Secure & Robust) iniciado em {HOST_NAME}:{SERVER_PORT}")
     server = HTTPServer((HOST_NAME, SERVER_PORT), PQCRequestHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nDesligando servidor com carinho... Até logo!")
-        server.server_close()
+        pass
