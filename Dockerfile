@@ -1,40 +1,39 @@
-# --- KORTANA ARCHITECTURE: PQC SERVER (FIXED PATHS) ---
+# --- KORTANA ARCHITECTURE: PQC SERVER (ALPINE FIX) ---
 FROM openquantumsafe/oqs-ossl3
 
 # Metadados
 LABEL maintainer="Kortana Team"
 
-# 1. Instalar Python e dependências básicas
-# O Alpine precisa do bash e pip para rodar seus scripts confortavelmente
+# 1. Instalar dependências de sistema
+# Bash é necessário para scripts e debugging; Pip para dependências Python
 RUN apk update && \
     apk add --no-cache python3 py3-pip bash
 
-# 2. A CORREÇÃO MESTRA (Baseada nos fatos do 'find' e 'ldd')
+# 2. CORREÇÃO DE AMBIENTE (CRÍTICO) 🚑
 # -----------------------------------------------------------
-# Onde estão as bibliotecas compartilhadas (.so)?
-# Adicionamos /opt/openssl/lib (onde o ldd achou a libcrypto)
+# O comando 'find' no servidor revelou que as libs estão em /opt/openssl
+# Precisamos dizer isso ao Linux e ao OpenSSL.
+
+# Para o Python achar a libcrypto.so.3:
 ENV LD_LIBRARY_PATH="/opt/openssl/lib:/opt/openssl/lib64:${LD_LIBRARY_PATH}"
 
-# Onde estão os módulos do OpenSSL (o provider oqs)?
-# Adicionamos o caminho exato que o 'find' nos mostrou.
+# Para o OpenSSL achar o provider 'oqs' (Kyber, Dilithium, etc):
 ENV OPENSSL_MODULES="/opt/openssl/lib64/ossl-modules"
 
-# Adicionamos o binário do openssl ao PATH para facilitar debugging
+# Adiciona binários ao PATH para facilitar (opcional)
 ENV PATH="/opt/openssl/bin:${PATH}"
 # -----------------------------------------------------------
 
-# 3. Configuração do App
+# 3. Configuração do Diretório
 WORKDIR /app
 
-# 4. Copiar os arquivos
+# 4. Copiar Código e Políticas
 COPY server_pqc.py .
 COPY policy_pqc.json .
 
-# 5. Expor porta
-# (Nota: No seu curl você usou 9000, aqui está 8080.
-# Certifique-se de alinhar isso no docker run -p 9000:8080)
+# 5. Expor a porta (Mapear 9000:8080 no Coolify/Docker)
 EXPOSE 8080
 
-# 6. Rodar servidor
-# O '-u' no Python é ótimo, evita buffer de log e mostra erros na hora.
+# 6. Start
+# O flag -u garante que os logs saiam em tempo real (sem buffer)
 CMD ["sh", "-c", "python3 -u server_pqc.py"]
