@@ -1,134 +1,75 @@
-import os
-import json
-import subprocess
-import base64
-import hashlib
-import tempfile
-import shutil
-from http.server import BaseHTTPRequestHandler, HTTPServer
+# --- KORTANA ARCHITECTURE: THE FORGE (COMPILE FROM SOURCE) ---
+# Usamos Alpine puro para ter controle total
+FROM alpine:3.20 as builder
 
-HOST_NAME = '0.0.0.0'
-SERVER_PORT = 8080
-TARGET_ALGORITHM = "kyber768"
+LABEL maintainer="Kortana Team"
 
-class PQCRequestHandler(BaseHTTPRequestHandler):
-    def _set_headers(self, status=200):
-        self.send_response(status)
-        self.send_header('Content-type', 'application/json')
-        self.end_headers()
+# 1. Instalar Ferramentas de Compilação (A Fábrica)
+RUN apk add --no-cache \
+    build-base \
+    cmake \
+    ninja \
+    git \
+    python3 \
+    linux-headers \
+    perl
 
-    def do_POST(self):
-        if self.path != '/encrypt':
-            self._set_headers(404)
-            self.wfile.write(json.dumps({"error": "Endpoint incorreto"}).encode('utf-8'))
-            return
+# 2. Preparar Diretórios
+WORKDIR /build
+ENV INSTALL_PREFIX="/opt/openssl"
 
-        try:
-            print(f"\n[Kortana] Recebendo missão em {self.path}...")
-            
-            openssl_bin = shutil.which("openssl")
-            if not openssl_bin: raise RuntimeError("Binário openssl sumiu!")
-            
-            custom_env = os.environ.copy()
+# 3. Baixar e Compilar liboqs (A Matemática Quântica)
+# Versão estável 0.10.0
+RUN git clone --branch 0.10.0 --depth 1 https://github.com/open-quantum-safe/liboqs.git && \
+    cd liboqs && \
+    mkdir build && cd build && \
+    cmake -GNinja -DCMAKE_INSTALL_PREFIX=$INSTALL_PREFIX -DOQS_USE_OPENSSL=OFF .. && \
+    ninja && ninja install
 
-            # Ler JSON
-            content_length = int(self.headers.get('Content-Length', 0))
-            raw_body = self.rfile.read(content_length).decode('utf-8')
-            try:
-                payload = json.loads(raw_body)
-                plaintext = payload.get('data') or payload.get('message')
-                if not plaintext: raise ValueError("JSON sem 'data'")
-            except:
-                plaintext = raw_body # Fallback
+# 4. Baixar e Compilar OpenSSL 3 (O Motor)
+# Versão 3.3.0
+RUN cd /build && \
+    git clone --branch openssl-3.3.0 --depth 1 https://github.com/openssl/openssl.git && \
+    cd openssl && \
+    ./config --prefix=$INSTALL_PREFIX --openssldir=$INSTALL_PREFIX/ssl shared && \
+    make -j$(nproc) && \
+    make install_sw
 
-            # Executar Criptografia Híbrida
-            result = self.run_hybrid_encryption(plaintext, openssl_bin, custom_env)
+# 5. Baixar e Compilar OQS Provider (A Ponte)
+# Versão 0.6.0
+RUN cd /build && \
+    git clone --branch 0.6.0 --depth 1 https://github.com/open-quantum-safe/oqsprovider.git && \
+    cd oqsprovider && \
+    liboqs_DIR=$INSTALL_PREFIX cmake -GNinja \
+        -DOPENSSL_ROOT_DIR=$INSTALL_PREFIX \
+        -DCMAKE_INSTALL_PREFIX=$INSTALL_PREFIX \
+        . && \
+    ninja && ninja install
 
-            self._set_headers(200)
-            self.wfile.write(json.dumps(result).encode('utf-8'))
-            print("[Kortana] SUCESSO! Criptografia realizada. 🥂")
+# --- ESTÁGIO FINAL: A IMAGEM LEVE ---
+FROM alpine:3.20
 
-        except Exception as e:
-            print(f"[Erro Fatal] {e}") # Isso vai aparecer no log do container
-            self._set_headers(400)
-            self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+# Instala Python e dependências de runtime
+RUN apk add --no-cache python3 py3-pip bash libstdc++
 
-    def run_cmd(self, cmd_list, env_config):
-        try:
-            subprocess.run(cmd_list, check=True, capture_output=True, env=env_config)
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr.decode('utf-8') if e.stderr else "Sem msg"
-            print(f"CMD FALHOU: {' '.join(cmd_list)}\nERRO: {stderr}")
-            raise RuntimeError(f"OpenSSL: {stderr}")
+# Copia APENAS o que foi compilado (O resultado limpo)
+COPY --from=builder /opt/openssl /opt/openssl
 
-    def run_hybrid_encryption(self, plaintext, openssl_bin, env):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            
-            base_args = ["-provider", "oqsprovider", "-provider", "default"]
-            
-            # --- 1. KEM (Kyber) - TUDO EM DER ---
-            kem_priv = os.path.join(tmp_dir, "kem_priv.der") 
-            kem_pub = os.path.join(tmp_dir, "kem_pub.der")
-            kem_ct = os.path.join(tmp_dir, "kem_ct.bin")
-            kem_ss = os.path.join(tmp_dir, "kem_ss.bin")
+# Configura as Variáveis de Ambiente (O Mapa do Tesouro)
+ENV PATH="/opt/openssl/bin:${PATH}"
+ENV LD_LIBRARY_PATH="/opt/openssl/lib:/opt/openssl/lib64:${LD_LIBRARY_PATH}"
+ENV OPENSSL_MODULES="/opt/openssl/lib64/ossl-modules"
+ENV OPENSSL_CONF="/opt/openssl/ssl/openssl.cnf"
 
-            self.run_cmd([openssl_bin, "genpkey"] + base_args + ["-algorithm", TARGET_ALGORITHM, "-out", kem_priv, "-outform", "DER"], env)
-            self.run_cmd([openssl_bin, "pkey"] + base_args + ["-in", kem_priv, "-inform", "DER", "-pubout", "-out", kem_pub, "-outform", "DER"], env)
-            self.run_cmd([openssl_bin, "pkeyutl"] + base_args + ["-encap", "-inkey", kem_priv, "-keyform", "DER", "-peerform", "DER", "-peerkey", kem_pub, "-out", kem_ct, "-secret", kem_ss], env)
+# O Golpe de Estado (Link Simbólico para garantir)
+RUN mv /usr/bin/openssl /usr/bin/openssl.alpine || true && \
+    ln -s /opt/openssl/bin/openssl /usr/bin/openssl
 
-            # --- 2. Clássico (X25519) - TUDO EM DER (A CORREÇÃO!) ---
-            dh_alg = "x25519"
-            dh_priv_a = os.path.join(tmp_dir, "da.der") # Mudou extensão
-            dh_priv_b = os.path.join(tmp_dir, "db.der") # Mudou extensão
-            dh_pub_b = os.path.join(tmp_dir, "dpb.der") # Mudou extensão
-            dh_ss = os.path.join(tmp_dir, "dss.bin")
+# Configuração do App
+WORKDIR /app
+COPY server_pqc.py .
+COPY policy_pqc.json .
 
-            # Agora passamos -outform DER para o clássico também
-            self.run_cmd([openssl_bin, "genpkey"] + base_args + ["-algorithm", dh_alg, "-out", dh_priv_a, "-outform", "DER"], env)
-            self.run_cmd([openssl_bin, "genpkey"] + base_args + ["-algorithm", dh_alg, "-out", dh_priv_b, "-outform", "DER"], env)
-            
-            # Extração de pública em DER
-            self.run_cmd([openssl_bin, "pkey"] + base_args + ["-in", dh_priv_b, "-inform", "DER", "-pubout", "-out", dh_pub_b, "-outform", "DER"], env)
-            
-            # Derivação usando chaves em DER
-            self.run_cmd([openssl_bin, "pkeyutl"] + base_args + ["-derive", "-inkey", dh_priv_a, "-keyform", "DER", "-peerform", "DER", "-peerkey", dh_pub_b, "-out", dh_ss], env)
+EXPOSE 8080
 
-            # --- 3. KDF (Igual) ---
-            with open(kem_ss, 'rb') as f: kss = f.read()
-            with open(dh_ss, 'rb') as f: dss = f.read()
-            kdf = hashlib.sha256()
-            kdf.update(kss)
-            kdf.update(dss)
-            sym_key = kdf.digest().hex()
-
-            # --- 4. Cifragem (Igual) ---
-            iv = os.urandom(12)
-            pt_file = os.path.join(tmp_dir, "pt.txt")
-            ct_file = os.path.join(tmp_dir, "ct.bin")
-            tag_file = os.path.join(tmp_dir, "tag.bin")
-            
-            with open(pt_file, 'w') as f: f.write(plaintext)
-
-            self.run_cmd([openssl_bin, "enc", "-aes-256-gcm"] + base_args + ["-K", sym_key, "-iv", iv.hex(), "-in", pt_file, "-out", ct_file, "-tag", tag_file], env)
-
-            with open(ct_file, 'rb') as f: ct = f.read()
-            with open(tag_file, 'rb') as f: tag = f.read()
-            with open(kem_ct, 'rb') as f: kct = f.read()
-            with open(kem_pub, 'rb') as f: kpub = f.read()
-            with open(dh_pub_b, 'rb') as f: dpub = f.read()
-
-            return {
-                "ciphertext": base64.b64encode(ct + tag).decode('utf-8'),
-                "nonce": base64.b64encode(iv).decode('utf-8'),
-                "kem_ciphertext": base64.b64encode(kct).decode('utf-8'),
-                "public_keys": {
-                    "pqc": base64.b64encode(kpub).decode('utf-8'),
-                    "classic": base64.b64encode(dpub).decode('utf-8')
-                },
-                "status": "encrypted_successfully"
-            }
-
-if __name__ == "__main__":
-    print(f"Kortana PQC Server (ALL-DER Mode) rodando na porta {SERVER_PORT}")
-    server = HTTPServer((HOST_NAME, SERVER_PORT), PQCRequestHandler)
-    server.serve_forever()
+CMD ["sh", "-c", "python3 -u server_pqc.py"]
