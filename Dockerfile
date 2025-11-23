@@ -1,38 +1,52 @@
-# --- KORTANA ARCHITECTURE: PQC SERVER (THE TAKEOVER) ---
+# --- KORTANA ARCHITECTURE: PQC SERVER (BINARY TAKEOVER EDITION) ---
 FROM openquantumsafe/oqs-ossl3
 
-LABEL maintainer="Kortana Team"
+# Metadados para rastreabilidade
+LABEL maintainer="Kortana Team" \
+      description="Servidor Python com OpenSSL Pós-Quântico (OQS) forçado sobre o sistema"
 
-# 1. Instalar Python (Isso traz o openssl do sistema 'intruso')
+# 1. Instalação de Dependências
+# O Alpine vai instalar o openssl padrão como dependência do python3.
+# Nós permitimos isso agora para corrigir logo abaixo.
 RUN apk update && \
     apk add --no-cache python3 py3-pip bash
 
-# 2. O GOLPE DE ESTADO (SUBSTITUIÇÃO DE BINÁRIO) ⚔️
-# Removemos/Renomeamos o openssl do Alpine para ele não atrapalhar
-# E criamos um link do nosso openssl OQS para o local padrão
+# 2. O GOLPE DE ESTADO (BINARY TAKEOVER) ⚔️
+# ---------------------------------------------------------------------
+# O problema anterior era: O Python chamava /usr/bin/openssl (Alpine padrão),
+# mas nós passávamos configurações do OQS. Resultado: "No encoders found".
+# SOLUÇÃO: Movemos o binário padrão e colocamos um link simbólico para o OQS.
 RUN mv /usr/bin/openssl /usr/bin/openssl.alpine || true && \
     ln -s /opt/openssl/bin/openssl /usr/bin/openssl
 
-# 3. AJUSTE DE AMBIENTE (FINE TUNING) 🎛️
-# Como o default provider é embutido, NÃO precisamos apontar path para ele.
-# Apontamos APENAS para o módulo extra (OQS).
-ENV OPENSSL_MODULES="/opt/openssl/lib64/ossl-modules"
-
-# Garantimos que as bibliotecas certas sejam carregadas
+# 3. CONFIGURAÇÃO DE AMBIENTE (Focada na Realidade /opt) 🗺️
+# ---------------------------------------------------------------------
+# Onde estão as bibliotecas .so? (libcrypto, libssl)
+# Adicionamos ambos os caminhos para garantir compatibilidade.
 ENV LD_LIBRARY_PATH="/opt/openssl/lib:/opt/openssl/lib64:${LD_LIBRARY_PATH}"
 
-# Forçamos o uso da configuração do OQS (caso exista)
+# Onde está o módulo Kyber/Dilithium?
+# Apontamos EXATAMENTE para onde o comando 'find' mostrou.
+# NOTA: Não precisamos apontar o 'default', pois o binário OQS já o tem embutido.
+ENV OPENSSL_MODULES="/opt/openssl/lib64/ossl-modules"
+
+# Configuração padrão do OpenSSL OQS
 ENV OPENSSL_CONF="/opt/openssl/ssl/openssl.cnf"
 
-# Adiciona ao PATH (Redundância de segurança)
+# Garantia extra: Coloca o binário OQS no início do PATH
 ENV PATH="/opt/openssl/bin:${PATH}"
 
-# 4. Configuração do App
+# 4. Configuração da Aplicação
 WORKDIR /app
+
+# Copia os artefatos do projeto
 COPY server_pqc.py .
 COPY policy_pqc.json .
 
+# 5. Exposição de Porta
+# Lembre-se de mapear 9000:8080 no Coolify
 EXPOSE 8080
 
-# 5. Start
+# 6. Execução
+# -u: Unbuffered (logs aparecem instantaneamente, vital para debug)
 CMD ["sh", "-c", "python3 -u server_pqc.py"]
