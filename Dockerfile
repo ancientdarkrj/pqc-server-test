@@ -1,39 +1,38 @@
-# --- KORTANA ARCHITECTURE: PQC SERVER (ALPINE FIX) ---
+# --- KORTANA ARCHITECTURE: PQC SERVER (THE TAKEOVER) ---
 FROM openquantumsafe/oqs-ossl3
 
-# Metadados
 LABEL maintainer="Kortana Team"
 
-# 1. Instalar dependências de sistema
-# Bash é necessário para scripts e debugging; Pip para dependências Python
+# 1. Instalar Python (Isso traz o openssl do sistema 'intruso')
 RUN apk update && \
     apk add --no-cache python3 py3-pip bash
 
-# 2. CORREÇÃO DE AMBIENTE (CRÍTICO) 🚑
-# -----------------------------------------------------------
-# O comando 'find' no servidor revelou que as libs estão em /opt/openssl
-# Precisamos dizer isso ao Linux e ao OpenSSL.
+# 2. O GOLPE DE ESTADO (SUBSTITUIÇÃO DE BINÁRIO) ⚔️
+# Removemos/Renomeamos o openssl do Alpine para ele não atrapalhar
+# E criamos um link do nosso openssl OQS para o local padrão
+RUN mv /usr/bin/openssl /usr/bin/openssl.alpine || true && \
+    ln -s /opt/openssl/bin/openssl /usr/bin/openssl
 
-# Para o Python achar a libcrypto.so.3:
-ENV LD_LIBRARY_PATH="/opt/openssl/lib:/opt/openssl/lib64:${LD_LIBRARY_PATH}"
-
-# Para o OpenSSL achar o provider 'oqs' (Kyber, Dilithium, etc):
+# 3. AJUSTE DE AMBIENTE (FINE TUNING) 🎛️
+# Como o default provider é embutido, NÃO precisamos apontar path para ele.
+# Apontamos APENAS para o módulo extra (OQS).
 ENV OPENSSL_MODULES="/opt/openssl/lib64/ossl-modules"
 
-# Adiciona binários ao PATH para facilitar (opcional)
+# Garantimos que as bibliotecas certas sejam carregadas
+ENV LD_LIBRARY_PATH="/opt/openssl/lib:/opt/openssl/lib64:${LD_LIBRARY_PATH}"
+
+# Forçamos o uso da configuração do OQS (caso exista)
+ENV OPENSSL_CONF="/opt/openssl/ssl/openssl.cnf"
+
+# Adiciona ao PATH (Redundância de segurança)
 ENV PATH="/opt/openssl/bin:${PATH}"
-# -----------------------------------------------------------
 
-# 3. Configuração do Diretório
+# 4. Configuração do App
 WORKDIR /app
-
-# 4. Copiar Código e Políticas
 COPY server_pqc.py .
 COPY policy_pqc.json .
 
-# 5. Expor a porta (Mapear 9000:8080 no Coolify/Docker)
 EXPOSE 8080
 
-# 6. Start
-# O flag -u garante que os logs saiam em tempo real (sem buffer)
+# 5. Start
 CMD ["sh", "-c", "python3 -u server_pqc.py"]
