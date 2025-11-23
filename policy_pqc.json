@@ -1,6 +1,6 @@
 {
-  "kem": "kyber768",
-  "dh": "x25519",
-  "symmetric": "aes-256-gcm",
-  "provider": "oqsprovider"
+"kem": "Kyber768",
+"dh": "X25519",
+"symmetric": "AES-256-GCM",
+"provider":
 }
